@@ -1,0 +1,61 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:        # run manually: Actions tab -> "Build Windows" -> Run workflow
+  push:
+    tags: ['v*']            # or push a tag such as v2.2.0 to also publish a GitHub Release
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Works whether the project files are in the repository root or inside a subfolder.
+      - name: Locate the project (the folder that contains package.json)
+        shell: pwsh
+        run: |
+          $pkg = Get-ChildItem -Path . -Recurse -Filter package.json -File -ErrorAction SilentlyContinue |
+                 Where-Object { $_.FullName -notmatch '[\\/]node_modules[\\/]' -and (Select-String -Path $_.FullName -Pattern '"name":\s*"dj-ape1"' -Quiet) } |
+                 Select-Object -First 1
+          if (-not $pkg) {
+            Write-Host "Files found in this repository:"
+            Get-ChildItem -Recurse -Depth 2 -Force | Where-Object { $_.FullName -notmatch '[\\/]\.git[\\/]' } | ForEach-Object { Write-Host $_.FullName }
+            Write-Error "The Dj Ape1 package.json was not found in this repository. Upload ALL the project files (package.json, main.js, native.js, preload.js, app/, assets/, build/, tests/). See README."
+            exit 1
+          }
+          $dir = $pkg.DirectoryName
+          $missing = @('main.js','native.js','preload.js','app/index.html','build/icon.ico','assets/tray.png') | Where-Object { -not (Test-Path (Join-Path $dir $_)) }
+          if ($missing) { Write-Error ("Some project files are missing: " + ($missing -join ', ') + ". Upload the complete project."); exit 1 }
+          Write-Host "Project folder: $dir"
+          "PROJECT_DIR=$($dir -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install
+        run: npm install
+        working-directory: ${{ env.PROJECT_DIR }}
+
+      - name: Tests
+        run: npm test
+        working-directory: ${{ env.PROJECT_DIR }}
+
+      - name: Build installer + portable
+        run: npm run dist
+        working-directory: ${{ env.PROJECT_DIR }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DjApe1-windows
+          path: ${{ env.PROJECT_DIR }}/dist/*.exe
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.PROJECT_DIR }}/dist/*.exe
